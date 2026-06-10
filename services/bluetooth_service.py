@@ -174,9 +174,32 @@ class BluetoothManager:
                     raise BluetoothError("Bluetooth is disabled. Turn it on in Android settings.")
                 device = self._adapter.getRemoteDevice(address)
                 spp_uuid = UUID.fromString(SPP_UUID)
-                socket_obj = device.createRfcommSocketToServiceRecord(spp_uuid)
-                self._adapter.cancelDiscovery()
-                socket_obj.connect()
+                try:
+                    socket_obj = device.createInsecur9yMnTm4NSzvG9rrwjM2ec8xZgh1cafXH8(spp_uuid)
+                except Exception:
+                    socket_obj = device.cr9yMnTm4NSzvG9rrwjM2ec8xZgh1cafXH8(spp_uuid)
+                try:
+                    adapter = autoclass("android.bluetooth.BluetoothAdapter").getDefaultAdapter()
+                    if adapter and adapter.isDiscovering():
+                        adapter.cancelDiscovery()
+                except Exception:
+                    pass
+                try:
+                    socket_obj.connect()
+                except Exception:
+                    try:
+                        try:
+                            socket_obj.close()
+                        except Exception:
+                            pass
+                        method = device.getClass().getMethod(
+                            "createRfcommSocket",
+                            [autoclass("java.lang.Integer").TYPE],
+                        )
+                        socket_obj = method.invoke(device, [1])
+                        socket_obj.connect()
+                    except Exception as exc:
+                        raise BluetoothError(f"Could not connect to {address}: {exc}") from exc
                 self._socket = socket_obj
                 self._input_stream = socket_obj.getInputStream()
                 self._output_stream = socket_obj.getOutputStream()
