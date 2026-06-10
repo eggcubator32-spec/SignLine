@@ -95,29 +95,9 @@ async def ensure_microphone_permission(
     page: ft.Page,
     permission_handler,
 ) -> bool:
-    """Request microphone permission on Android. Always True on desktop."""
+    """No-op because Flet AudioRecorder triggers microphone permission."""
 
-    from services.stt_service import _is_android
-
-    if not _is_android():
-        return True
-
-    try:
-        from flet_permission_handler import Permission, PermissionStatus
-    except ImportError:
-        return True
-    if permission_handler is None:
-        return False
-
-    status = await _check_permission(permission_handler, Permission.MICROPHONE)
-    if status == PermissionStatus.GRANTED:
-        return True
-
-    new_status = await permission_handler.request(Permission.MICROPHONE)
-    if new_status == PermissionStatus.PERMANENTLY_DENIED:
-        await permission_handler.open_app_settings()
-        return False
-    return new_status == PermissionStatus.GRANTED
+    return True
 
 
 async def _check_permission(permission_handler, permission):
