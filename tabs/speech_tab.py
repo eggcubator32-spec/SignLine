@@ -9,7 +9,7 @@ import flet as ft
 
 from app_state import AppState
 from components import build_output_card, copy_text, show_snack
-from services.stt_service import STTResult, STTService, _is_android, make_stt_service
+from services.stt_service import STTResult, STTService, make_stt_service
 from theme import (
     BORDER,
     CARD_RADIUS,
@@ -33,15 +33,6 @@ class SpeechTab:
         self.page = page
         self.state = state
         self._stt: STTService | None = None
-        self._permission_handler = None
-        if _is_android():
-            try:
-                from flet_permission_handler import PermissionHandler
-
-                self._permission_handler = PermissionHandler()
-                self._register_permission_handler()
-            except Exception:
-                self._permission_handler = None
         self._listening = False
         self._animation_running = False
         self._started_at = 0.0
@@ -93,24 +84,6 @@ class SpeechTab:
             color=TEXT_MUTED,
         )
         self._view = self._build_view()
-
-    def _register_permission_handler(self) -> None:
-        """Register microphone permission handler with the page."""
-
-        if self._permission_handler is None:
-            return
-        try:
-            services = getattr(self.page, "services", None)
-            if services is not None:
-                if not any(service is self._permission_handler for service in services):
-                    services.append(self._permission_handler)
-                return
-        except Exception:
-            pass
-        try:
-            self.page.register_service(self._permission_handler)
-        except Exception:
-            pass
 
     def build(self) -> ft.Control:
         """Return the tab root control."""
@@ -227,26 +200,7 @@ class SpeechTab:
         if self._listening:
             self.stop()
             return
-        self.page.run_task(self._start_with_permission_check)
-
-    async def _start_with_permission_check(self) -> None:
-        """Request microphone permission before starting STT."""
-
-        try:
-            from services.permission_service import ensure_microphone_permission
-
-            granted = await ensure_microphone_permission(self.page, self._permission_handler)
-            if not granted:
-                show_snack(
-                    self.page,
-                    "Microphone permission is required.",
-                    bgcolor="#B91C1C",
-                )
-                return
-            self._start_listening()
-        except Exception as exc:
-            print(f"[SpeechTab] permission check failed: {exc}")
-            self._start_listening()
+        self._start_listening()
 
     def _start_listening(self) -> None:
         """Start platform speech recognition."""
@@ -273,24 +227,9 @@ class SpeechTab:
                 vad_threshold=self.state.settings.vad_threshold,
             )
             self._stt = make_stt_service(
+                page=self.page,
                 asr_config=config,
-                preferred_engine=self.state.settings.speech_engine,
             )
-            if not self._stt.is_available():
-                if _is_android() and self.state.settings.speech_engine != "native":
-                    show_snack(
-                        self.page,
-                        "Transcription mode is desktop-only on Android. Choose Native speech recognition.",
-                        bgcolor="#B91C1C",
-                    )
-                    return
-                show_snack(
-                    self.page,
-                    "Speech recognition is not available on this device.",
-                    bgcolor="#B91C1C",
-                )
-                return
-
             self._listening = True
             self._started_at = time.monotonic()
             self.status_text.value = "Listening..."
@@ -309,7 +248,7 @@ class SpeechTab:
             print(f"[SpeechTab] _start_listening failed: {exc}")
             show_snack(
                 self.page,
-                f"Could not start listening: {exc}",
+                f"Could not start: {exc}",
                 bgcolor="#B91C1C",
             )
             self._listening = False
@@ -330,7 +269,7 @@ class SpeechTab:
                     return
                 if result.is_final:
                     self._append_result(result.text)
-                    self.status_text.value = "Listening..."
+                    self.status_text.value = "Ready"
                 else:
                     preview = (
                         result.text[:40] + "..."
@@ -340,7 +279,7 @@ class SpeechTab:
                     self.status_text.value = f"Hearing: {preview}"
                 self.page.update()
             except Exception as exc:
-                print(f"[SpeechTab] update failed: {exc}")
+                print(f"[SpeechTab] _on_stt_result update: {exc}")
 
         try:
             self.page.run_task(_update)
