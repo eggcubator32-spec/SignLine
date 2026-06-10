@@ -335,13 +335,14 @@ class SettingsTab:
         controls.append(self.speech_language_dropdown)
         if not IS_ANDROID:
             controls.append(self.speech_model_dropdown)
-        controls.extend(
-            [
-                self.speech_quality_note,
-                self._build_audio_filters_section(),
-                self._build_whisper_vad_section(),
-            ]
-        )
+        controls.append(self.speech_quality_note)
+        if not IS_ANDROID:
+            controls.extend(
+                [
+                    self._build_audio_filters_section(),
+                    self._build_whisper_vad_section(),
+                ]
+            )
         return ft.Container(
             bgcolor=SURFACE,
             border=border_all(1, BORDER),
