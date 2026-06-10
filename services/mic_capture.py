@@ -76,7 +76,7 @@ class DesktopMicCapture(MicCapture):
 
 
 class FletMicCapture(MicCapture):
-    """Mobile microphone capture using Flet AudioRecorder."""
+    """flet-audio-recorder based capture for Android/non-desktop."""
 
     def __init__(self, page: Any) -> None:
         if page is None:
@@ -86,48 +86,50 @@ class FletMicCapture(MicCapture):
         self._on_chunk: AudioChunkCallback | None = None
 
     def start(self, on_chunk: AudioChunkCallback) -> None:
-        """Add a Flet recorder to the page and start PCM streaming."""
+        """Add a recorder to the page and start PCM streaming."""
 
-        import base64
-        import flet as ft
-
-        if getattr(ft, "AudioRecorder", None) is None:
-            raise RuntimeError("This Flet build does not provide ft.AudioRecorder.")
-
-        self._on_chunk = on_chunk
-        self._recorder = ft.AudioRecorder(
-            audio_encoder=ft.AudioEncoder.PCM_16BIT,
-            sample_rate=16_000,
-            num_channels=1,
-            on_data=self._handle_data,
-        )
-        self._page.overlay.append(self._recorder)
-        self._page.update()
-        self._recorder.start_recording()
-
-    def _handle_data(self, event: Any) -> None:
-        """Decode base64 PCM chunks from Flet AudioRecorder."""
-
-        if self._on_chunk and getattr(event, "data", None):
+        try:
             import base64
+            from flet_audio_recorder import AudioEncoder, AudioRecorder
 
-            self._on_chunk(base64.b64decode(event.data))
+            self._on_chunk = on_chunk
+
+            def _handle_stream(event: Any) -> None:
+                if self._on_chunk and getattr(event, "data", None):
+                    try:
+                        self._on_chunk(base64.b64decode(event.data))
+                    except Exception as exc:
+                        print(f"[FletMicCapture] chunk: {exc}")
+
+            self._recorder = AudioRecorder(
+                audio_encoder=AudioEncoder.PCM_16BIT,
+                sample_rate=16_000,
+                num_channels=1,
+                on_stream=_handle_stream,
+            )
+            self._page.overlay.append(self._recorder)
+            self._page.update()
+            self._recorder.start_recording()
+        except ImportError as exc:
+            print(f"[FletMicCapture] flet-audio-recorder unavailable: {exc}")
+        except Exception as exc:
+            print(f"[FletMicCapture] start failed: {exc}")
 
     def stop(self) -> None:
         """Stop recording and remove the recorder from page overlay."""
 
-        if self._recorder is None:
-            return
         try:
-            self._recorder.stop_recording()
-        finally:
-            try:
-                self._page.overlay.remove(self._recorder)
-                self._page.update()
-            except Exception:
-                pass
-            self._recorder = None
+            if self._recorder:
+                self._recorder.stop_recording()
+                try:
+                    self._page.overlay.remove(self._recorder)
+                    self._page.update()
+                except Exception:
+                    pass
+                self._recorder = None
             self._on_chunk = None
+        except Exception as exc:
+            print(f"[FletMicCapture] stop failed: {exc}")
 
 
 def make_capture(page: Any | None = None) -> MicCapture:
