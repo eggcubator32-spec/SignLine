@@ -25,6 +25,7 @@ dependencies = [
     "numpy>=2.0.0",
     "python-dotenv>=1.2.2",
     "flet-permission-handler>=0.85.1",
+    "flet-audio-recorder>=0.85.1",
 ]
 
 [dependency-groups]
