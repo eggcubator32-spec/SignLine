@@ -130,19 +130,22 @@ class SpeechTab:
     def stop(self) -> None:
         """Stop the active STT service and reset controls."""
 
-        if self._listening:
-            self._listening = False
-            if self._stt:
-                self._stt.stop()
-                self._stt = None
-            self.status_text.value = "Ready"
-            self.toggle_button.content = ft.Text(
-                "Start Listening",
-                weight=ft.FontWeight.W_700,
-            )
-            self.toggle_button.icon = ft.Icons.PLAY_ARROW
-            self.toggle_button.bgcolor = PRIMARY_BLUE
-            self.page.update()
+        try:
+            if self._listening:
+                self._listening = False
+                if self._stt:
+                    self._stt.stop()
+                    self._stt = None
+                self.status_text.value = "Ready"
+                self.toggle_button.content = ft.Text(
+                    "Start Listening",
+                    weight=ft.FontWeight.W_700,
+                )
+                self.toggle_button.icon = ft.Icons.PLAY_ARROW
+                self.toggle_button.bgcolor = PRIMARY_BLUE
+                self.page.update()
+        except Exception as exc:
+            print(f"[SpeechTab] stop failed: {exc}")
 
     def _build_view(self) -> ft.Control:
         """Create the responsive speech tab layout."""
@@ -229,87 +232,120 @@ class SpeechTab:
     async def _start_with_permission_check(self) -> None:
         """Request microphone permission before starting STT."""
 
-        from services.permission_service import ensure_microphone_permission
+        try:
+            from services.permission_service import ensure_microphone_permission
 
-        granted = await ensure_microphone_permission(self.page, self._permission_handler)
-        if not granted:
-            show_snack(
-                self.page,
-                "Microphone permission is required.",
-                bgcolor="#B91C1C",
-            )
-            return
-        self._start_listening()
+            granted = await ensure_microphone_permission(self.page, self._permission_handler)
+            if not granted:
+                show_snack(
+                    self.page,
+                    "Microphone permission is required.",
+                    bgcolor="#B91C1C",
+                )
+                return
+            self._start_listening()
+        except Exception as exc:
+            print(f"[SpeechTab] permission check failed: {exc}")
+            self._start_listening()
 
     def _start_listening(self) -> None:
         """Start platform speech recognition."""
 
-        from services.asr_service import ASRConfig
+        try:
+            from services.asr_service import ASRConfig
 
-        config = ASRConfig(
-            model_size_or_path=self.state.settings.whisper_model_name_or_path(
-                self.state.assets_dir
-            ),
-            language=self.state.settings.speech_language,
-            compute_type="int8",
-            beam_size=1,
-            vad_filter=True,
-            mic_gain=self.state.settings.mic_gain,
-            denoise_enabled=self.state.settings.denoise_enabled,
-            highpass_enabled=self.state.settings.highpass_enabled,
-            highpass_cutoff_hz=self.state.settings.highpass_cutoff_hz,
-            denoise_prop_decrease=self.state.settings.denoise_prop_decrease,
-            denoise_stationary=self.state.settings.denoise_stationary,
-            no_speech_threshold=self.state.settings.no_speech_threshold,
-            vad_silence_ms=self.state.settings.vad_silence_ms,
-            vad_threshold=self.state.settings.vad_threshold,
-        )
-        self._stt = make_stt_service(
-            asr_config=config,
-            preferred_engine=self.state.settings.speech_engine,
-        )
-        if not self._stt.is_available():
-            if _is_android() and self.state.settings.speech_engine != "native":
+            config = ASRConfig(
+                model_size_or_path=self.state.settings.whisper_model_name_or_path(
+                    self.state.assets_dir
+                ),
+                language=self.state.settings.speech_language,
+                compute_type="int8",
+                beam_size=1,
+                vad_filter=True,
+                mic_gain=self.state.settings.mic_gain,
+                denoise_enabled=self.state.settings.denoise_enabled,
+                highpass_enabled=self.state.settings.highpass_enabled,
+                highpass_cutoff_hz=self.state.settings.highpass_cutoff_hz,
+                denoise_prop_decrease=self.state.settings.denoise_prop_decrease,
+                denoise_stationary=self.state.settings.denoise_stationary,
+                no_speech_threshold=self.state.settings.no_speech_threshold,
+                vad_silence_ms=self.state.settings.vad_silence_ms,
+                vad_threshold=self.state.settings.vad_threshold,
+            )
+            self._stt = make_stt_service(
+                asr_config=config,
+                preferred_engine=self.state.settings.speech_engine,
+            )
+            if not self._stt.is_available():
+                if _is_android() and self.state.settings.speech_engine != "native":
+                    show_snack(
+                        self.page,
+                        "Transcription mode is desktop-only on Android. Choose Native speech recognition.",
+                        bgcolor="#B91C1C",
+                    )
+                    return
                 show_snack(
                     self.page,
-                    "Transcription mode is desktop-only on Android. Choose Native speech recognition.",
+                    "Speech recognition is not available on this device.",
                     bgcolor="#B91C1C",
                 )
                 return
+
+            self._listening = True
+            self._started_at = time.monotonic()
+            self.status_text.value = "Listening..."
+            self.timer_text.value = "00:00"
+            self.toggle_button.content = ft.Text(
+                "Stop Listening",
+                weight=ft.FontWeight.W_700,
+            )
+            self.toggle_button.icon = ft.Icons.STOP
+            self.toggle_button.bgcolor = "#1D4ED8"
+            if not self._animation_running:
+                self.page.run_task(self._animate_listening)
+            self._stt.start(self._on_stt_result)
+            self.page.update()
+        except Exception as exc:
+            print(f"[SpeechTab] _start_listening failed: {exc}")
             show_snack(
                 self.page,
-                "Speech recognition is not available on this device.",
+                f"Could not start listening: {exc}",
                 bgcolor="#B91C1C",
             )
-            return
-
-        self._listening = True
-        self._started_at = time.monotonic()
-        self.status_text.value = "Listening..."
-        self.timer_text.value = "00:00"
-        self.toggle_button.content = ft.Text(
-            "Stop Listening",
-            weight=ft.FontWeight.W_700,
-        )
-        self.toggle_button.icon = ft.Icons.STOP
-        self.toggle_button.bgcolor = "#1D4ED8"
-        if not self._animation_running:
-            self.page.run_task(self._animate_listening)
-        self._stt.start(self._on_stt_result)
-        self.page.update()
+            self._listening = False
+            self.toggle_button.content = ft.Text(
+                "Start Listening",
+                weight=ft.FontWeight.W_700,
+            )
+            self.toggle_button.icon = ft.Icons.PLAY_ARROW
+            self.toggle_button.bgcolor = PRIMARY_BLUE
+            self.page.update()
 
     def _on_stt_result(self, result: STTResult) -> None:
-        """Apply one STT result to output or live status."""
+        """Thread-safe STT result handler."""
 
-        if not result.text:
-            return
-        if result.is_final:
-            self._append_result(result.text)
-            self.status_text.value = "Listening..." if self._listening else "Ready"
-        else:
-            preview = result.text[:40] + "..." if len(result.text) > 40 else result.text
-            self.status_text.value = f"Hearing: {preview}"
-        self.page.update()
+        async def _update() -> None:
+            try:
+                if not result.text:
+                    return
+                if result.is_final:
+                    self._append_result(result.text)
+                    self.status_text.value = "Listening..."
+                else:
+                    preview = (
+                        result.text[:40] + "..."
+                        if len(result.text) > 40
+                        else result.text
+                    )
+                    self.status_text.value = f"Hearing: {preview}"
+                self.page.update()
+            except Exception as exc:
+                print(f"[SpeechTab] update failed: {exc}")
+
+        try:
+            self.page.run_task(_update)
+        except Exception as exc:
+            print(f"[SpeechTab] run_task failed: {exc}")
 
     async def _animate_listening(self) -> None:
         """Animate waveform bars and the microphone pulse while listening."""
