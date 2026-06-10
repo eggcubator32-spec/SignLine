@@ -32,148 +32,88 @@ class STTService(ABC):
         """Return whether this STT backend can run on the current platform."""
 
 
-class AndroidSTTService(STTService):
-    """Uses Android SpeechRecognizer via pyjnius==1.6.1 for on-device STT."""
+class AndroidRecorderService(STTService):
+    """Record and stream audio on Android using flet-audio-recorder."""
 
-    def __init__(self, language: str = "en") -> None:
+    def __init__(self, page) -> None:
+        self._page = page
+        self._recorder = None
         self._on_result: Callable[[STTResult], None] | None = None
-        self._recognizer = None
-        self._listener = None
-        self._listening = False
-        self._language = _android_locale(language)
+        self._chunks: list[bytes] = []
+        self._streaming = False
 
     def is_available(self) -> bool:
-        """Return whether Android native speech recognition is available."""
+        """Return whether flet-audio-recorder is importable."""
 
         try:
-            from jnius import autoclass
+            from flet_audio_recorder import AudioRecorder  # noqa: F401
 
-            SpeechRecognizer = autoclass("android.speech.SpeechRecognizer")
-            context = autoclass("org.kivy.android.PythonActivity").mActivity
-            return bool(SpeechRecognizer.isRecognitionAvailable(context))
-        except Exception:
+            return True
+        except ImportError:
             return False
 
     def start(self, on_result: Callable[[STTResult], None]) -> None:
-        """Start Android SpeechRecognizer on the Android UI thread."""
+        """Start recording and collect base64 PCM16 stream chunks."""
 
         try:
-            from android.runnable import run_on_ui_thread
-            from jnius import PythonJavaClass, autoclass, java_method
+            import base64
+            from flet_audio_recorder import AudioEncoder, AudioRecorder
 
             self._on_result = on_result
+            self._chunks = []
+            self._streaming = True
 
-            Intent = autoclass("android.content.Intent")
-            RecognizerIntent = autoclass("android.speech.RecognizerIntent")
-            SpeechRecognizer = autoclass("android.speech.SpeechRecognizer")
-            context = autoclass("org.kivy.android.PythonActivity").mActivity
-
-            service = self
-
-            class RecognitionListener(PythonJavaClass):
-                __javainterfaces__ = ["android/speech/RecognitionListener"]
-                __javacontext__ = "app"
-
-                def __init__(self, callback: Callable[[STTResult], None]) -> None:
-                    self.callback = callback
-                    super().__init__()
-
-                @java_method("(Landroid/os/Bundle;)V")
-                def onReadyForSpeech(self, params) -> None:
-                    return None
-
-                @java_method("(Landroid/os/Bundle;)V")
-                def onResults(self, results) -> None:
-                    text = _bundle_first_text(results, RecognizerIntent, SpeechRecognizer)
-                    if text:
-                        self.callback(STTResult(text=text, is_final=True))
-                    service._listening = False
-
-                @java_method("(Landroid/os/Bundle;)V")
-                def onPartialResults(self, results) -> None:
-                    text = _bundle_first_text(results, RecognizerIntent, SpeechRecognizer)
-                    if text:
-                        self.callback(STTResult(text=text, is_final=False))
-
-                @java_method("(I)V")
-                def onError(self, error) -> None:
-                    service._listening = False
-
-                @java_method("()V")
-                def onEndOfSpeech(self) -> None:
-                    return None
-
-                @java_method("(F)V")
-                def onRmsChanged(self, rmsdB) -> None:
-                    return None
-
-                @java_method("([B)V")
-                def onBufferReceived(self, buffer) -> None:
-                    return None
-
-                @java_method("()V")
-                def onBeginningOfSpeech(self) -> None:
-                    return None
-
-                @java_method("(ILandroid/os/Bundle;)V")
-                def onEvent(self, eventType, params) -> None:
-                    return None
-
-            @run_on_ui_thread
-            def _start_on_ui() -> None:
-                if self._recognizer is not None:
-                    try:
-                        self._recognizer.destroy()
-                    except Exception:
-                        pass
-                self._recognizer = SpeechRecognizer.createSpeechRecognizer(context)
-                self._listener = RecognitionListener(on_result)
-                self._recognizer.setRecognitionListener(self._listener)
-                intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
-                intent.putExtra(
-                    RecognizerIntent.EXTRA_LANGUAGE_MODEL,
-                    RecognizerIntent.LANGUAGE_MODEL_FREE_FORM,
-                )
-                intent.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, True)
-                intent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
-                intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, self._language)
-                intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, self._language)
+            def _handle_stream(event) -> None:
+                if not self._streaming or not getattr(event, "data", None):
+                    return
                 try:
-                    intent.putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, True)
-                except Exception:
-                    pass
-                self._recognizer.startListening(intent)
-                self._listening = True
+                    self._chunks.append(base64.b64decode(event.data))
+                except Exception as exc:
+                    print(f"[AndroidRecorder] chunk decode failed: {exc}")
 
-            _start_on_ui()
-
+            self._recorder = AudioRecorder(
+                audio_encoder=AudioEncoder.PCM_16BIT,
+                sample_rate=16_000,
+                num_channels=1,
+                on_stream=_handle_stream,
+            )
+            self._page.overlay.append(self._recorder)
+            self._page.update()
+            self._recorder.start_recording()
+        except ImportError as exc:
+            print(f"[AndroidRecorder] flet-audio-recorder unavailable: {exc}")
         except Exception as exc:
-            print(f"[AndroidSTT] start failed: {exc}")
+            print(f"[AndroidRecorder] start failed: {exc}")
 
     def stop(self) -> None:
-        """Stop Android SpeechRecognizer on the Android UI thread."""
+        """Stop recording and emit a summary result."""
 
         try:
-            from android.runnable import run_on_ui_thread
+            self._streaming = False
+            if self._recorder:
+                self._recorder.stop_recording()
+                try:
+                    self._page.overlay.remove(self._recorder)
+                    self._page.update()
+                except Exception:
+                    pass
+                self._recorder = None
 
-            @run_on_ui_thread
-            def _stop_on_ui() -> None:
-                if self._recognizer:
-                    try:
-                        self._recognizer.stopListening()
-                    except Exception:
-                        pass
-                    try:
-                        self._recognizer.destroy()
-                    except Exception:
-                        pass
-                    self._recognizer = None
-                    self._listener = None
-                self._listening = False
-
-            _stop_on_ui()
+            if self._chunks and self._on_result:
+                total_bytes = sum(len(chunk) for chunk in self._chunks)
+                duration = total_bytes / 2 / 16_000
+                self._on_result(
+                    STTResult(
+                        text=(
+                            f"[Recorded {duration:.1f}s of audio - "
+                            "offline transcription not available on Android]"
+                        ),
+                        is_final=True,
+                    )
+                )
+            self._chunks = []
         except Exception as exc:
-            print(f"[AndroidSTT] stop failed: {exc}")
+            print(f"[AndroidRecorder] stop failed: {exc}")
 
 
 class DesktopSTTService(STTService):
@@ -270,14 +210,12 @@ def _is_android() -> bool:
         return hasattr(sys, "getandroidapilevel")
 
 
-def make_stt_service(asr_config=None, preferred_engine: str | None = None) -> STTService:
+def make_stt_service(page=None, asr_config=None) -> STTService:
     """Return the right STT backend for the current platform."""
 
-    engine = (preferred_engine or "native").lower()
     if _is_android():
-        if engine == "native":
-            language = getattr(asr_config, "language", None) or "en"
-            svc = AndroidSTTService(language=language)
+        if page is not None:
+            svc = AndroidRecorderService(page)
             if svc.is_available():
                 return svc
         return NoOpSTTService()
@@ -290,38 +228,10 @@ def make_stt_service(asr_config=None, preferred_engine: str | None = None) -> ST
     return NoOpSTTService()
 
 
-def _android_locale(language: str | None) -> str:
-    """Map app language keys to Android recognizer locales."""
-
-    return "fil-PH" if language in {"tl", "fil", "fil-PH"} else "en-US"
-
-
-def _bundle_first_text(results, RecognizerIntent, SpeechRecognizer) -> str:
-    """Extract the first recognized phrase from an Android result bundle."""
-
-    keys = [
-        getattr(SpeechRecognizer, "RESULTS_RECOGNITION", None),
-        getattr(RecognizerIntent, "EXTRA_RESULTS", None),
-        "android.speech.extra.PARTIAL_RESULTS",
-    ]
-    for key in keys:
-        if not key:
-            continue
-        try:
-            matches = results.getStringArrayList(key)
-            if matches and matches.size() > 0:
-                text = matches.get(0)
-                if text:
-                    return str(text)
-        except Exception:
-            continue
-    return ""
-
-
 __all__ = [
     "STTResult",
     "STTService",
-    "AndroidSTTService",
+    "AndroidRecorderService",
     "DesktopSTTService",
     "NoOpSTTService",
     "make_stt_service",
